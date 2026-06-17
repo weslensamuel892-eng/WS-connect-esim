@@ -110,19 +110,36 @@ def set_setting(key, value):
     conn.close()
 
 # ──────────────────────────────────────────────────────────────────────────────
-# IRONPAY
+# IRONPAY & CPF GENERATOR
 # ──────────────────────────────────────────────────────────────────────────────
+def generate_cpf():
+    cpf = [random.randint(0, 9) for _ in range(9)]
+    for _ in range(2):
+        val = sum([(len(cpf) + 1 - i) * v for i, v in enumerate(cpf)]) % 11
+        cpf.append(11 - val if val > 1 else 0)
+    return ''.join(map(str, cpf))
+
 def create_ironpay_payment(price, chat_id, token, user=None):
     amount_cents = int(Decimal(str(price)) * 100)
     customer_name = " ".join(filter(None, [getattr(user, 'first_name', ''), getattr(user, 'last_name', '')])) or f"Cliente {chat_id}"
     payload = {
-        "amount": amount_cents, "offer_hash": IRONPAY_OFFER_HASH, "payment_method": "pix",
-        "customer": {"name": customer_name[:100], "email": f"user{chat_id}@wsconnect.com", "phone_number": "11999999999", "document": "12345678901"},
-        "transaction_origin": "api", "expire_in_days": 1
+        "amount": amount_cents, 
+        "offer_hash": IRONPAY_OFFER_HASH, 
+        "payment_method": "pix",
+        "customer": {
+            "name": customer_name[:100], 
+            "email": f"user{chat_id}@wsconnect.com", 
+            "phone_number": "11999999999", 
+            "document": generate_cpf() # CPF Dinâmico para evitar erro de duplicidade ou formato
+        },
+        "transaction_origin": "api", 
+        "expire_in_days": 1
     }
     url = f"{IRONPAY_BASE_URL}/transactions?api_token={IRONPAY_TOKEN}"
-    r = requests.post(url, json=payload, timeout=20)
-    r.raise_for_status()
+    r = requests.post(url, json=payload, timeout=25)
+    if r.status_code != 200:
+        logger.error(f"Erro Ironpay API: {r.status_code} - {r.text}")
+        raise Exception(f"API Error: {r.status_code}")
     res = r.json()
     return res.get("hash"), res.get("pix", {}).get("pix_qr_code")
 
@@ -131,6 +148,7 @@ def check_ironpay_status(transaction_hash):
     try:
         r = requests.get(url, timeout=15)
         res = r.json()
+        # Mapeamento de status baseado na doc da Ironpay
         status_raw = res.get("payment_status", res.get("status", res.get("data", {}).get("status", ""))).lower()
         if status_raw in ["paid", "approved", "success"]: return "approved"
         if status_raw in ["canceled", "expired", "refunded"]: return "expired"
@@ -163,7 +181,7 @@ def get_main_kb():
         [InlineKeyboardButton(text="🛒 Comprar E-SIM", callback_data="menu:plans")],
         [InlineKeyboardButton(text="👤 Meu Perfil / Saldo", callback_data="menu:profile")],
         [InlineKeyboardButton(text="💳 Adicionar Saldo", callback_data="menu:add_balance")],
-        [InlineKeyboardButton(text="❓ Suporte", url="https://t.me/Suportdsacompras")]
+        [InlineKeyboardButton(text="❓ Suporte", url="https://t.me/Mategazx")]
     ])
 
 @dp.message(Command("start"))
@@ -196,13 +214,19 @@ async def cb_profile(callback: CallbackQuery):
         [InlineKeyboardButton(text="💳 Recarregar Saldo", callback_data="menu:add_balance")],
         [InlineKeyboardButton(text="⬅️ Voltar", callback_data="menu:home")]
     ])
-    await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="Markdown") if callback.message.photo else await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    if callback.message.photo:
+        await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="Markdown")
+    else:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
 
 @dp.callback_query(F.data == "menu:add_balance")
 async def cb_add_balance(callback: CallbackQuery):
     text = "💳 *ADICIONAR SALDO*\n\nQuanto você deseja adicionar à sua conta?\n\nDigite `/pix <valor>` para gerar um pagamento.\n_Exemplo: /pix 50_"
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Voltar", callback_data="menu:profile")]])
-    await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="Markdown") if callback.message.photo else await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    if callback.message.photo:
+        await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="Markdown")
+    else:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
 
 @dp.message(Command("pix"))
 async def cmd_pix(message: Message, command: CommandObject):
@@ -216,7 +240,9 @@ async def cmd_pix(message: Message, command: CommandObject):
         with conn: conn.execute("INSERT INTO payments (payment_token, payment_id, telegram_id, operator, plan_gb, price, status) VALUES (?, ?, ?, ?, ?, ?, ?)", (token, pay_id, message.from_user.id, "RECARGA", "SALDO", amount, "pending"))
         conn.close()
         await message.answer(f"💎 *RECARGA DE R$ {amount:.2f}*\n\nEscaneie o QR Code ou copie o código abaixo:\n\n`{pix_code}`\n\n_O saldo será creditado automaticamente após o pagamento._", parse_mode="Markdown")
-    except: await message.answer("❌ Erro ao gerar pagamento.")
+    except Exception as e:
+        logger.error(f"Erro ao gerar PIX: {e}")
+        await message.answer("❌ Erro ao gerar pagamento. Verifique seu token da Ironpay ou tente novamente mais tarde.")
 
 @dp.callback_query(F.data == "menu:plans")
 async def cb_plans(callback: CallbackQuery):
@@ -224,7 +250,10 @@ async def cb_plans(callback: CallbackQuery):
     if not ops: return await callback.answer("⚠️ Nenhuma operadora disponível.", show_alert=True)
     btns = [[InlineKeyboardButton(text=f"📶 {op}", callback_data=f"op:{op}")] for op in ops]
     btns.append([InlineKeyboardButton(text="⬅️ Voltar", callback_data="menu:home")])
-    await callback.message.edit_caption(caption="📶 *ESCOLHA UMA OPERADORA:*", reply_markup=InlineKeyboardMarkup(inline_keyboard=btns), parse_mode="Markdown") if callback.message.photo else await callback.message.edit_text("📶 *ESCOLHA UMA OPERADORA:*", reply_markup=InlineKeyboardMarkup(inline_keyboard=btns), parse_mode="Markdown")
+    if callback.message.photo:
+        await callback.message.edit_caption(caption="📶 *ESCOLHA UMA OPERADORA:*", reply_markup=InlineKeyboardMarkup(inline_keyboard=btns), parse_mode="Markdown")
+    else:
+        await callback.message.edit_text("📶 *ESCOLHA UMA OPERADORA:*", reply_markup=InlineKeyboardMarkup(inline_keyboard=btns), parse_mode="Markdown")
 
 @dp.callback_query(F.data.startswith("op:"))
 async def cb_op_plans(callback: CallbackQuery):
@@ -263,14 +292,19 @@ async def cb_pay_balance(callback: CallbackQuery):
     photo_path = pick_from_stock(op, gb)
     if photo_path:
         conn = get_db_connection()
-        caption = conn.execute("SELECT caption FROM stock_meta WHERE file_path = ?", (str(photo_path),)).fetchone()["caption"]
+        meta = conn.execute("SELECT caption FROM stock_meta WHERE file_path = ?", (str(photo_path),)).fetchone()
+        caption = meta["caption"] if meta else ""
         with conn:
             conn.execute("UPDATE users SET balance = balance - ?, total_spent = total_spent + ? WHERE telegram_id = ?", (price, price, callback.from_user.id))
         conn.close()
         
         await callback.message.delete()
         await bot.send_photo(callback.from_user.id, photo=FSInputFile(str(photo_path)), caption=f"✅ *Compra realizada com sucesso!*\n\n{caption}", parse_mode="Markdown")
-        shutil.move(str(photo_path), SOLD_DIR / op / gb / photo_path.name)
+        
+        # Mover para pasta de vendidos
+        dest_dir = SOLD_DIR / op / gb
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(photo_path), dest_dir / photo_path.name)
     else: await callback.answer("⚠️ Erro ao processar estoque.", show_alert=True)
 
 @dp.callback_query(F.data.startswith("pay_pix:"))
@@ -293,7 +327,7 @@ async def cb_pay_pix(callback: CallbackQuery):
 @dp.message(Command("admin"))
 async def cmd_admin(message: Message):
     if message.from_user.id not in ADMIN_IDS: return
-    text = "🛠 *PAINEL ADMIN*\n\n/addoperator <nome>\n/addplan <op> <gb> <preço>\n/restock <op> <gb>\n/stock\n/done\n/setstartimg"
+    text = "🛠 *PAINEL ADMIN*\n\n/addoperator <nome>\n/addplan <op> <gb> <preço>\n/restock <op> <gb>\n/stock\n/done\n/setstartimg\n/broadcast <mensagem>"
     await message.answer(text, parse_mode="Markdown")
 
 @dp.message(Command("addoperator"))
@@ -308,32 +342,43 @@ async def admin_addplan(message: Message, command: CommandObject):
     if message.from_user.id not in ADMIN_IDS: return
     args = command.args.split()
     if len(args) < 3: return
-    op, gb, price = args[0], args[1], float(args[2].replace(",", "."))
-    if op not in data["operators"]: data["operators"][op] = {"plans": {}}
-    data["operators"][op]["plans"][gb] = {"price": price}
-    save_data(data)
-    (STOCK_DIR / op / gb).mkdir(parents=True, exist_ok=True)
-    (SOLD_DIR / op / gb).mkdir(parents=True, exist_ok=True)
-    await message.answer(f"✅ Plano {gb} de {op} adicionado.")
+    try:
+        op, gb, price = args[0], args[1], float(args[2].replace(",", "."))
+        if op not in data["operators"]: data["operators"][op] = {"plans": {}}
+        data["operators"][op]["plans"][gb] = {"price": price}
+        save_data(data)
+        (STOCK_DIR / op / gb).mkdir(parents=True, exist_ok=True)
+        (SOLD_DIR / op / gb).mkdir(parents=True, exist_ok=True)
+        await message.answer(f"✅ Plano {gb} de {op} adicionado por R$ {price:.2f}.")
+    except: await message.answer("❌ Erro no formato. Use: /addplan <op> <gb> <preço>")
 
 @dp.message(Command("restock"))
 async def admin_restock(message: Message, command: CommandObject):
     if message.from_user.id not in ADMIN_IDS or not command.args: return
     args = command.args.split()
+    if len(args) < 2: return
     admin_state[message.from_user.id] = (args[0], args[1])
-    await message.answer(f"📥 Mandando fotos para {args[0]} {args[1]}. Use /done para sair.")
+    await message.answer(f"📥 Mandando fotos para {args[0]} {args[1]}. Envie a foto com a legenda. Use /done para sair.")
 
 @dp.message(Command("done"))
 async def admin_done(message: Message):
     if message.from_user.id in admin_state: del admin_state[message.from_user.id]
     await message.answer("✅ Finalizado.")
 
+@dp.message(Command("setstartimg"))
+async def admin_setimg(message: Message):
+    if message.from_user.id not in ADMIN_IDS: return
+    admin_state[message.from_user.id] = ("SYSTEM", "IMG")
+    await message.answer("🖼 Envie a nova imagem de boas-vindas.")
+
 @dp.message(F.photo)
 async def admin_photo(message: Message):
     if message.from_user.id not in admin_state: return
     op, gb = admin_state[message.from_user.id]
+    
     if op == "SYSTEM":
         set_setting("start_image_id", message.photo[-1].file_id)
+        del admin_state[message.from_user.id]
         return await message.answer("✅ Imagem de boas-vindas atualizada!")
     
     d = STOCK_DIR / op / gb
@@ -342,15 +387,16 @@ async def admin_photo(message: Message):
     file = await bot.get_file(file_id)
     dest = d / f"{uuid.uuid4().hex}.jpg"
     await bot.download_file(file.file_path, dest)
+    
     conn = get_db_connection()
     with conn: conn.execute("INSERT OR REPLACE INTO stock_meta (file_path, caption) VALUES (?, ?)", (str(dest), message.caption or ""))
     conn.close()
-    await message.reply(f"📸 Salvo! Estoque: {get_plan_stock_count(op, gb)}")
+    await message.reply(f"📸 Salvo! Estoque {op} {gb}: {get_plan_stock_count(op, gb)}")
 
 @dp.message(Command("stock"))
 async def admin_stock(message: Message):
     if message.from_user.id not in ADMIN_IDS: return
-    text = "📦 *ESTOQUE*\n"
+    text = "📦 *ESTOQUE ATUAL*\n"
     for op, info in data.get("operators", {}).items():
         text += f"\n📶 {op}:\n"
         for gb in info["plans"]: text += f"  - {gb}: {get_plan_stock_count(op, gb)}\n"
@@ -376,15 +422,25 @@ async def poll_payments():
                         photo_path = pick_from_stock(op, gb)
                         if photo_path:
                             conn = get_db_connection()
-                            caption = conn.execute("SELECT caption FROM stock_meta WHERE file_path = ?", (str(photo_path),)).fetchone()["caption"]
-                            await bot.send_photo(uid, photo=FSInputFile(str(photo_path)), caption=f"✅ *PAGAMENTO APROVADO!*\n\n{caption}", parse_mode="Markdown")
-                            shutil.move(str(photo_path), SOLD_DIR / op / gb / photo_path.name)
-                        else: await bot.send_message(uid, "⚠️ Pagamento aprovado, mas ficamos sem estoque! Chame o suporte.")
+                            meta = conn.execute("SELECT caption FROM stock_meta WHERE file_path = ?", (str(photo_path),)).fetchone()
+                            caption = meta["caption"] if meta else ""
+                            await bot.send_message(uid, f"✅ *PAGAMENTO APROVADO!*\n\nProduto: {op} {gb}", parse_mode="Markdown")
+                            await bot.send_photo(uid, photo=FSInputFile(str(photo_path)), caption=caption, parse_mode="Markdown")
+                            
+                            dest_dir = SOLD_DIR / op / gb
+                            dest_dir.mkdir(parents=True, exist_ok=True)
+                            shutil.move(str(photo_path), dest_dir / photo_path.name)
+                        else: 
+                            await bot.send_message(uid, "⚠️ Pagamento aprovado, mas ficamos sem estoque! O administrador já foi avisado. Chame o suporte: @Mategazx")
                     
                     conn = get_db_connection()
-                    with conn: conn.execute("UPDATE payments SET delivered = 1, status = 'approved' WHERE payment_id = ?", (r["payment_id"],))
+                    with conn: conn.execute("UPDATE payments SET delivered = 1, status = 'approved' WHERE telegram_id = ? AND payment_id = ?", (uid, r["payment_id"]))
                     conn.close()
-        except: pass
+                elif status == "expired":
+                    conn = get_db_connection()
+                    with conn: conn.execute("UPDATE payments SET status = 'expired' WHERE payment_id = ?", (r["payment_id"],))
+                    conn.close()
+        except Exception as e: logger.error(f"Poll error: {e}")
         await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
 async def main():
