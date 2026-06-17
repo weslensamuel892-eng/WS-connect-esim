@@ -26,3 +26,4 @@ Por padrão, o bot usa SQLite (`payments.db`). Na Railway, se você não configu
 
 ---
 Desenvolvido por Manus para WS Connect eSIM.
+*Última atualização: 17 de Junho de 2026 - Deploy Trigger*
