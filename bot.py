@@ -123,10 +123,12 @@ def create_ironpay_payment(price, chat_id, token, user=None, product_name="Recar
     amount_cents = int(Decimal(str(price)) * 100)
     customer_name = " ".join(filter(None, [getattr(user, 'first_name', ''), getattr(user, 'last_name', '')])) or f"Cliente {chat_id}"
     
-    # Novo Payload com campo 'cart' obrigatório na nova versão da API
     payload = {
         "amount": amount_cents,
         "offer_hash": IRONPAY_OFFER_HASH,
+        "product_hash": IRONPAY_OFFER_HASH, # Usando offer_hash como product_hash (comum na Ironpay)
+        "title": product_name,
+        "operation_type": "sell",
         "payment_method": "pix",
         "customer": {
             "name": customer_name[:100],
