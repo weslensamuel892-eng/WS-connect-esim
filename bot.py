@@ -242,7 +242,7 @@ async def cmd_pix(message: Message, command: CommandObject):
     if not command.args: return await message.answer("⚠️ Use: `/pix <valor>` (Ex: `/pix 20`)", parse_mode="Markdown")
     try:
         amount = float(command.args.replace(",", "."))
-        if amount < 1.0: return await message.answer("⚠️ Valor mínimo para recarga é R$ 1,00.")
+        if amount < 5.0: return await message.answer("⚠️ *VALOR MÍNIMO:* O valor mínimo para pagamentos via Ironpay é de *R$ 5,00*.", parse_mode="Markdown")
         token = uuid.uuid4().hex
         pay_id, pix_code = create_ironpay_payment(amount, message.chat.id, token, message.from_user, "Recarga de Saldo")
         conn = get_db_connection()
@@ -251,7 +251,11 @@ async def cmd_pix(message: Message, command: CommandObject):
         await message.answer(f"💎 *RECARGA DE R$ {amount:.2f}*\n\nEscaneie o QR Code ou copie o código abaixo:\n\n`{pix_code}`\n\n_O saldo será creditado automaticamente após o pagamento._", parse_mode="Markdown")
     except Exception as e:
         logger.error(f"Erro ao gerar PIX: {e}")
-        await message.answer("❌ Erro ao gerar pagamento. Tente novamente em alguns instantes.")
+        error_msg = str(e)
+        if "5,00 reais" in error_msg:
+            await message.answer("⚠️ *VALOR MÍNIMO:* A Ironpay exige que o valor seja de no mínimo *R$ 5,00*.", parse_mode="Markdown")
+        else:
+            await message.answer("❌ Erro ao gerar pagamento. Verifique se o valor é maior que R$ 5,00 ou tente novamente mais tarde.")
 
 @dp.callback_query(F.data == "menu:plans")
 async def cb_plans(callback: CallbackQuery):
