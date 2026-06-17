@@ -138,7 +138,7 @@ def create_ironpay_payment(price, chat_id, token, user=None, product_name="Recar
             {
                 "product_name": product_name,
                 "quantity": 1,
-                "unit_price": amount_cents
+                "price": amount_cents
             }
         ],
         "transaction_origin": "api",
