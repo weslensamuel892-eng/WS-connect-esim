@@ -110,7 +110,7 @@ def set_setting(key, value):
     conn.close()
 
 # ──────────────────────────────────────────────────────────────────────────────
-# IRONPAY & CPF GENERATOR
+# IRONPAY
 # ──────────────────────────────────────────────────────────────────────────────
 def generate_cpf():
     cpf = [random.randint(0, 9) for _ in range(9)]
@@ -119,27 +119,37 @@ def generate_cpf():
         cpf.append(11 - val if val > 1 else 0)
     return ''.join(map(str, cpf))
 
-def create_ironpay_payment(price, chat_id, token, user=None):
+def create_ironpay_payment(price, chat_id, token, user=None, product_name="Recarga de Saldo"):
     amount_cents = int(Decimal(str(price)) * 100)
     customer_name = " ".join(filter(None, [getattr(user, 'first_name', ''), getattr(user, 'last_name', '')])) or f"Cliente {chat_id}"
+    
+    # Novo Payload com campo 'cart' obrigatório na nova versão da API
     payload = {
-        "amount": amount_cents, 
-        "offer_hash": IRONPAY_OFFER_HASH, 
+        "amount": amount_cents,
+        "offer_hash": IRONPAY_OFFER_HASH,
         "payment_method": "pix",
         "customer": {
-            "name": customer_name[:100], 
-            "email": f"user{chat_id}@wsconnect.com", 
-            "phone_number": "11999999999", 
-            "document": generate_cpf() # CPF Dinâmico para evitar erro de duplicidade ou formato
+            "name": customer_name[:100],
+            "email": f"user{chat_id}@wsconnect.com",
+            "phone_number": "11999999999",
+            "document": generate_cpf()
         },
-        "transaction_origin": "api", 
+        "cart": [
+            {
+                "product_name": product_name,
+                "quantity": 1,
+                "unit_price": amount_cents
+            }
+        ],
+        "transaction_origin": "api",
         "expire_in_days": 1
     }
+    
     url = f"{IRONPAY_BASE_URL}/transactions?api_token={IRONPAY_TOKEN}"
     r = requests.post(url, json=payload, timeout=25)
     if r.status_code != 200:
         logger.error(f"Erro Ironpay API: {r.status_code} - {r.text}")
-        raise Exception(f"API Error: {r.status_code}")
+        raise Exception(f"API Error: {r.status_code} - {r.text}")
     res = r.json()
     return res.get("hash"), res.get("pix", {}).get("pix_qr_code")
 
@@ -148,7 +158,6 @@ def check_ironpay_status(transaction_hash):
     try:
         r = requests.get(url, timeout=15)
         res = r.json()
-        # Mapeamento de status baseado na doc da Ironpay
         status_raw = res.get("payment_status", res.get("status", res.get("data", {}).get("status", ""))).lower()
         if status_raw in ["paid", "approved", "success"]: return "approved"
         if status_raw in ["canceled", "expired", "refunded"]: return "expired"
@@ -235,14 +244,14 @@ async def cmd_pix(message: Message, command: CommandObject):
         amount = float(command.args.replace(",", "."))
         if amount < 1.0: return await message.answer("⚠️ Valor mínimo para recarga é R$ 1,00.")
         token = uuid.uuid4().hex
-        pay_id, pix_code = create_ironpay_payment(amount, message.chat.id, token, message.from_user)
+        pay_id, pix_code = create_ironpay_payment(amount, message.chat.id, token, message.from_user, "Recarga de Saldo")
         conn = get_db_connection()
         with conn: conn.execute("INSERT INTO payments (payment_token, payment_id, telegram_id, operator, plan_gb, price, status) VALUES (?, ?, ?, ?, ?, ?, ?)", (token, pay_id, message.from_user.id, "RECARGA", "SALDO", amount, "pending"))
         conn.close()
         await message.answer(f"💎 *RECARGA DE R$ {amount:.2f}*\n\nEscaneie o QR Code ou copie o código abaixo:\n\n`{pix_code}`\n\n_O saldo será creditado automaticamente após o pagamento._", parse_mode="Markdown")
     except Exception as e:
         logger.error(f"Erro ao gerar PIX: {e}")
-        await message.answer("❌ Erro ao gerar pagamento. Verifique seu token da Ironpay ou tente novamente mais tarde.")
+        await message.answer("❌ Erro ao gerar pagamento. Tente novamente em alguns instantes.")
 
 @dp.callback_query(F.data == "menu:plans")
 async def cb_plans(callback: CallbackQuery):
@@ -301,7 +310,6 @@ async def cb_pay_balance(callback: CallbackQuery):
         await callback.message.delete()
         await bot.send_photo(callback.from_user.id, photo=FSInputFile(str(photo_path)), caption=f"✅ *Compra realizada com sucesso!*\n\n{caption}", parse_mode="Markdown")
         
-        # Mover para pasta de vendidos
         dest_dir = SOLD_DIR / op / gb
         dest_dir.mkdir(parents=True, exist_ok=True)
         shutil.move(str(photo_path), dest_dir / photo_path.name)
@@ -313,11 +321,11 @@ async def cb_pay_pix(callback: CallbackQuery):
     price = data["operators"][op]["plans"][gb]["price"]
     token = uuid.uuid4().hex
     try:
-        pay_id, pix_code = create_ironpay_payment(price, callback.message.chat.id, token, callback.from_user)
+        pay_id, pix_code = create_ironpay_payment(price, callback.message.chat.id, token, callback.from_user, f"eSIM {op} {gb}")
         conn = get_db_connection()
         with conn: conn.execute("INSERT INTO payments (payment_token, payment_id, telegram_id, operator, plan_gb, price, status) VALUES (?, ?, ?, ?, ?, ?, ?)", (token, pay_id, callback.from_user.id, op, gb, price, "pending"))
         conn.close()
-        text = f"💎 *PAGAMENTO PIX*\n\nValor: *R$ {price:.2f}*\n\nCopia e Cola:\n`{pix_code}`\n\n_O produto será enviado automaticamente após o pagamento._"
+        text = f"💎 *PAGAMENTO PIX*\n\nProduto: *eSIM {op} {gb}*\nValor: *R$ {price:.2f}*\n\nCopia e Cola:\n`{pix_code}`\n\n_O produto será enviado automaticamente após o pagamento._"
         await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Voltar", callback_data=f"buy:{op}:{gb}")]]), parse_mode="Markdown")
     except: await callback.answer("❌ Erro ao gerar PIX.")
 
@@ -401,6 +409,20 @@ async def admin_stock(message: Message):
         text += f"\n📶 {op}:\n"
         for gb in info["plans"]: text += f"  - {gb}: {get_plan_stock_count(op, gb)}\n"
     await message.answer(text, parse_mode="Markdown")
+
+@dp.message(Command("broadcast"))
+async def admin_broadcast(message: Message, command: CommandObject):
+    if message.from_user.id not in ADMIN_IDS or not command.args: return
+    conn = get_db_connection()
+    users = conn.execute("SELECT telegram_id FROM users").fetchall()
+    conn.close()
+    count = 0
+    for u in users:
+        try:
+            await bot.send_message(u["telegram_id"], command.args, parse_mode="Markdown")
+            count += 1
+        except: pass
+    await message.answer(f"📢 Mensagem enviada para {count} usuários.")
 
 # ──────────────────────────────────────────────────────────────────────────────
 # POLLING
