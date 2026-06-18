@@ -82,7 +82,7 @@ def save_data(d):
 data = load_data()
 
 # ──────────────────────────────────────────────────────────────────────────────
-# IRONPAY ENGINE
+# IRONPAY ENGINE (V4 - FIXED FIELDS)
 # ──────────────────────────────────────────────────────────────────────────────
 def generate_cpf():
     cpf = [random.randint(0, 9) for _ in range(9)]
@@ -91,15 +91,16 @@ def generate_cpf():
         cpf.append(11 - val if val > 1 else 0)
     return ''.join(map(str, cpf))
 
-def create_ironpay_payment(price, chat_id, token, user=None, product_name="Recarga de Saldo"):
+def create_ironpay_v4_payment(price, chat_id, token, user=None, product_name="Recarga de Saldo"):
     amount_cents = int(Decimal(str(price)) * 100)
     customer_name = " ".join(filter(None, [getattr(user, 'first_name', ''), getattr(user, 'last_name', '')])) or f"Cliente {chat_id}"
     
+    # Payload rigoroso com todos os campos que a Ironpay exige
     payload = {
         "amount": amount_cents,
         "offer_hash": IRONPAY_OFFER_HASH,
         "product_hash": IRONPAY_OFFER_HASH,
-        "title": product_name,
+        "title": str(product_name),
         "operation_type": "sell",
         "payment_method": "pix",
         "customer": {
@@ -110,7 +111,7 @@ def create_ironpay_payment(price, chat_id, token, user=None, product_name="Recar
         },
         "cart": [
             {
-                "product_name": product_name,
+                "product_name": str(product_name),
                 "quantity": 1,
                 "price": amount_cents
             }
@@ -122,7 +123,7 @@ def create_ironpay_payment(price, chat_id, token, user=None, product_name="Recar
     url = f"{IRONPAY_BASE_URL}/transactions?api_token={IRONPAY_TOKEN}"
     r = requests.post(url, json=payload, timeout=25)
     if r.status_code != 200:
-        raise Exception(f"API Error {r.status_code}: {r.text}")
+        raise Exception(f"Erro {r.status_code}: {r.text}")
     res = r.json()
     return res.get("hash"), res.get("pix", {}).get("pix_qr_code")
 
@@ -227,57 +228,50 @@ async def cmd_admin(message: Message):
 async def cb_admin(callback: CallbackQuery):
     action = callback.data.split(":")[1]
     uid = callback.from_user.id
-    
     if action == "add_op":
         admin_state[uid] = {"action": "WAIT_OP_NAME"}
         await callback.message.edit_text("⌨️ Digite o nome da nova **Operadora** (ex: Vivo, Claro):", parse_mode="Markdown")
-    
     elif action == "add_plan":
         ops = list(data["operators"].keys())
         if not ops: return await callback.answer("⚠️ Crie uma operadora primeiro!", show_alert=True)
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=op, callback_data=f"admin:sel_op_plan:{op}")] for op in ops])
         await callback.message.edit_text("📶 Escolha a operadora para o novo plano:", reply_markup=kb)
-        
     elif action == "restock_menu":
         ops = list(data["operators"].keys())
         if not ops: return await callback.answer("⚠️ Sem operadoras!", show_alert=True)
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=op, callback_data=f"admin:sel_op_stock:{op}")] for op in ops])
         await callback.message.edit_text("📥 Escolha a operadora para repor:", reply_markup=kb)
-
     elif action == "view_stock":
         text = "📦 *ESTOQUE ATUAL*\n"
         for op, info in data.get("operators", {}).items():
             text += f"\n📶 {op}:\n"
             for gb in info["plans"]: text += f"  - {gb}: {get_plan_stock_count(op, gb)}\n"
         await callback.message.edit_text(text, reply_markup=get_admin_kb(), parse_mode="Markdown")
-
     elif action == "debug_api":
         await callback.answer("🔍 Testando API...", show_alert=False)
         try:
-            pay_id, _ = create_ironpay_payment(10.0, uid, "DEBUG", callback.from_user, "TESTE CONEXAO")
-            await callback.message.edit_text(f"✅ *API CONECTADA!*\n\nID Gerado: `{pay_id}`\n\nSua Ironpay está funcionando perfeitamente.", reply_markup=get_admin_kb(), parse_mode="Markdown")
+            pay_id, _ = create_ironpay_v4_payment(10.0, uid, "DEBUG", callback.from_user, "TESTE CONEXAO")
+            await callback.message.edit_text(f"✅ *API CONECTADA!*\n\nID Gerado: `{pay_id}`", reply_markup=get_admin_kb(), parse_mode="Markdown")
         except Exception as e:
             await callback.message.edit_text(f"❌ *ERRO NA API:*\n\n`{str(e)}`", reply_markup=get_admin_kb(), parse_mode="Markdown")
-
     elif action == "set_img":
         admin_state[uid] = {"action": "WAIT_START_IMG"}
         await callback.message.edit_text("🖼 Envie a nova foto para o menu inicial:", parse_mode="Markdown")
-
     elif action == "broadcast":
         admin_state[uid] = {"action": "WAIT_BROADCAST"}
-        await callback.message.edit_text("📢 Digite a mensagem que deseja enviar para TODOS os usuários:", parse_mode="Markdown")
+        await callback.message.edit_text("📢 Digite a mensagem para TODOS:", parse_mode="Markdown")
 
 @dp.callback_query(F.data.startswith("admin:sel_op_plan:"))
 async def cb_admin_sel_op(callback: CallbackQuery):
     op = callback.data.split(":")[3]
     admin_state[callback.from_user.id] = {"action": "WAIT_PLAN_GB", "op": op}
-    await callback.message.edit_text(f"📶 Operadora: *{op}*\n\n⌨️ Digite o tamanho do plano (ex: 10GB, 20GB):", parse_mode="Markdown")
+    await callback.message.edit_text(f"📶 Operadora: *{op}*\n\n⌨️ Digite o tamanho do plano:", parse_mode="Markdown")
 
 @dp.callback_query(F.data.startswith("admin:sel_op_stock:"))
 async def cb_admin_sel_op_stock(callback: CallbackQuery):
     op = callback.data.split(":")[3]
     plans = list(data["operators"][op]["plans"].keys())
-    if not plans: return await callback.answer("⚠️ Sem planos nesta operadora!", show_alert=True)
+    if not plans: return await callback.answer("⚠️ Sem planos!", show_alert=True)
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=gb, callback_data=f"admin:sel_plan_stock:{op}:{gb}")] for gb in plans])
     await callback.message.edit_text(f"📥 Escolha o plano de *{op}* para repor:", reply_markup=kb)
 
@@ -285,27 +279,23 @@ async def cb_admin_sel_op_stock(callback: CallbackQuery):
 async def cb_admin_sel_plan_stock(callback: CallbackQuery):
     _, _, _, op, gb = callback.data.split(":")
     admin_state[callback.from_user.id] = {"action": "WAIT_STOCK_PHOTOS", "op": op, "gb": gb}
-    await callback.message.edit_text(f"📥 *REPOSIÇÃO: {op} {gb}*\n\nEnvie as fotos dos QR Codes agora.\n\n_Dica: O que você escrever na legenda da foto será entregue ao cliente._\n\nUse `/done` para finalizar.", parse_mode="Markdown")
+    await callback.message.edit_text(f"📥 *REPOSIÇÃO: {op} {gb}*\n\nEnvie as fotos agora. Use `/done` para sair.", parse_mode="Markdown")
 
 @dp.message(F.text | F.photo)
 async def handle_admin_input(message: Message):
     uid = message.from_user.id
     if uid not in admin_state: return
-    
     state = admin_state[uid]
-    
     if state["action"] == "WAIT_OP_NAME":
         op = message.text.strip()
         data["operators"][op] = {"plans": {}}
         save_data(data)
         del admin_state[uid]
-        await message.answer(f"✅ Operadora *{op}* criada!", reply_markup=get_admin_kb(), parse_mode="Markdown")
-
+        await message.answer(f"✅ Operadora *{op}* criada!", reply_markup=get_admin_kb())
     elif state["action"] == "WAIT_PLAN_GB":
         admin_state[uid]["gb"] = message.text.strip()
         admin_state[uid]["action"] = "WAIT_PLAN_PRICE"
-        await message.answer(f"💰 Digite o **Preço** para o plano *{state['op']} {message.text}* (ex: 29.90):", parse_mode="Markdown")
-
+        await message.answer(f"💰 Digite o Preço para *{state['op']} {message.text}*:")
     elif state["action"] == "WAIT_PLAN_PRICE":
         try:
             price = float(message.text.replace(",", "."))
@@ -315,29 +305,23 @@ async def handle_admin_input(message: Message):
             (STOCK_DIR / op / gb).mkdir(parents=True, exist_ok=True)
             (SOLD_DIR / op / gb).mkdir(parents=True, exist_ok=True)
             del admin_state[uid]
-            await message.answer(f"✅ Plano *{op} {gb}* criado por *R$ {price:.2f}*!", reply_markup=get_admin_kb(), parse_mode="Markdown")
-        except: await message.answer("❌ Preço inválido! Digite apenas números.")
-
+            await message.answer(f"✅ Plano *{op} {gb}* criado!", reply_markup=get_admin_kb())
+        except: await message.answer("❌ Preço inválido!")
     elif state["action"] == "WAIT_START_IMG" and message.photo:
         set_setting("start_image_id", message.photo[-1].file_id)
         del admin_state[uid]
-        await message.answer("✅ Imagem de boas-vindas atualizada!", reply_markup=get_admin_kb())
-
+        await message.answer("✅ Imagem atualizada!", reply_markup=get_admin_kb())
     elif state["action"] == "WAIT_BROADCAST":
         msg = message.text
         conn = get_db_connection()
         users = conn.execute("SELECT telegram_id FROM users").fetchall()
         conn.close()
         del admin_state[uid]
-        await message.answer(f"📢 Iniciando envio para {len(users)} usuários...")
-        count = 0
+        await message.answer(f"📢 Enviando para {len(users)} usuários...")
         for u in users:
-            try:
-                await bot.send_message(u["telegram_id"], msg, parse_mode="Markdown")
-                count += 1
+            try: await bot.send_message(u["telegram_id"], msg, parse_mode="Markdown")
             except: pass
-        await message.answer(f"✅ Enviado com sucesso para {count} usuários!", reply_markup=get_admin_kb())
-
+        await message.answer("✅ Enviado!", reply_markup=get_admin_kb())
     elif state["action"] == "WAIT_STOCK_PHOTOS" and message.photo:
         op, gb = state["op"], state["gb"]
         d = STOCK_DIR / op / gb
@@ -348,10 +332,7 @@ async def handle_admin_input(message: Message):
         conn = get_db_connection()
         with conn: conn.execute("INSERT OR REPLACE INTO stock_meta (file_path, caption) VALUES (?, ?)", (str(dest), message.caption or ""))
         conn.close()
-        await message.reply(f"📸 Foto salva no estoque {op} {gb}!")
-
-# (Restante do código: cmd_pix, cb_plans, cb_buy, cb_pay_balance, cb_pay_pix, poll_payments, main...)
-# [O código continua com as funções de usuário já existentes]
+        await message.reply(f"📸 Foto salva!")
 
 @dp.callback_query(F.data == "menu:home")
 async def cb_home(callback: CallbackQuery):
@@ -361,51 +342,46 @@ async def cb_home(callback: CallbackQuery):
 @dp.callback_query(F.data == "menu:profile")
 async def cb_profile(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
-    text = f"👤 *MEU PERFIL*\n\n🆔 Seu ID: `{user['telegram_id']}`\n💰 Saldo Atual: *R$ {user['balance']:.2f}*\n🛍 Total Gasto: *R$ {user['total_spent']:.2f}*\n\nUse o botão abaixo para recarregar seu saldo via PIX."
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💳 Recarregar Saldo", callback_data="menu:add_balance")],[InlineKeyboardButton(text="⬅️ Voltar", callback_data="menu:home")]])
+    text = f"👤 *MEU PERFIL*\n\n🆔 Seu ID: `{user['telegram_id']}`\n💰 Saldo: *R$ {user['balance']:.2f}*\n🛍 Gasto: *R$ {user['total_spent']:.2f}*"
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💳 Recarregar", callback_data="menu:add_balance")],[InlineKeyboardButton(text="⬅️ Voltar", callback_data="menu:home")]])
     if callback.message.photo: await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="Markdown")
     else: await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
 
 @dp.callback_query(F.data == "menu:add_balance")
 async def cb_add_balance(callback: CallbackQuery):
-    text = "💳 *ADICIONAR SALDO*\n\nQuanto você deseja adicionar à sua conta?\n\nDigite `/pix <valor>` para gerar um pagamento.\n_Exemplo: /pix 50_"
+    text = "💳 *ADICIONAR SALDO*\n\nDigite `/pix <valor>` para gerar um pagamento.\n_Exemplo: /pix 50_"
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Voltar", callback_data="menu:profile")]])
     if callback.message.photo: await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="Markdown")
     else: await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
 
 @dp.message(Command("pix"))
 async def cmd_pix(message: Message, command: CommandObject):
-    if not command.args: return await message.answer("⚠️ Use: `/pix <valor>` (Ex: `/pix 20`)", parse_mode="Markdown")
+    if not command.args: return await message.answer("⚠️ Use: `/pix <valor>`")
     try:
         amount = float(command.args.replace(",", "."))
-        if amount < 5.0: return await message.answer("⚠️ *VALOR MÍNIMO:* O valor mínimo para pagamentos via Ironpay é de *R$ 5,00*.", parse_mode="Markdown")
+        if amount < 5.0: return await message.answer("⚠️ Valor mínimo: R$ 5,00.")
         token = uuid.uuid4().hex
-        pay_id, pix_code = create_ironpay_payment(amount, message.chat.id, token, message.from_user, "Recarga de Saldo")
+        pay_id, pix_code = create_ironpay_v4_payment(amount, message.chat.id, token, message.from_user, "Recarga de Saldo")
         conn = get_db_connection()
         with conn: conn.execute("INSERT INTO payments (payment_token, payment_id, telegram_id, operator, plan_gb, price, status) VALUES (?, ?, ?, ?, ?, ?, ?)", (token, pay_id, message.from_user.id, "RECARGA", "SALDO", amount, "pending"))
         conn.close()
-        await message.answer(f"💎 *RECARGA DE R$ {amount:.2f}*\n\nEscaneie o QR Code ou copie o código abaixo:\n\n`{pix_code}`\n\n_O saldo será creditado automaticamente após o pagamento._", parse_mode="Markdown")
-    except Exception as e:
-        logger.error(f"Erro ao gerar PIX: {e}")
-        await message.answer(f"❌ Erro ao gerar pagamento.\n\nMotivo: `{str(e)}`", parse_mode="Markdown")
+        await message.answer(f"💎 *RECARGA R$ {amount:.2f}*\n\nCopia e Cola:\n`{pix_code}`", parse_mode="Markdown")
+    except Exception as e: await message.answer(f"❌ Erro: `{str(e)}`", parse_mode="Markdown")
 
 @dp.callback_query(F.data == "menu:plans")
 async def cb_plans(callback: CallbackQuery):
     ops = data.get("operators", {})
-    if not ops: return await callback.answer("⚠️ Nenhuma operadora disponível.", show_alert=True)
+    if not ops: return await callback.answer("⚠️ Sem operadoras.", show_alert=True)
     btns = [[InlineKeyboardButton(text=f"📶 {op}", callback_data=f"op:{op}")] for op in ops]
     btns.append([InlineKeyboardButton(text="⬅️ Voltar", callback_data="menu:home")])
-    if callback.message.photo: await callback.message.edit_caption(caption="📶 *ESCOLHA UMA OPERADORA:*", reply_markup=InlineKeyboardMarkup(inline_keyboard=btns), parse_mode="Markdown")
-    else: await callback.message.edit_text("📶 *ESCOLHA UMA OPERADORA:*", reply_markup=InlineKeyboardMarkup(inline_keyboard=btns), parse_mode="Markdown")
+    if callback.message.photo: await callback.message.edit_caption(caption="📶 *OPERADORAS:*", reply_markup=InlineKeyboardMarkup(inline_keyboard=btns), parse_mode="Markdown")
+    else: await callback.message.edit_text("📶 *OPERADORAS:*", reply_markup=InlineKeyboardMarkup(inline_keyboard=btns), parse_mode="Markdown")
 
 @dp.callback_query(F.data.startswith("op:"))
 async def cb_op_plans(callback: CallbackQuery):
     op = callback.data.split(":")[1]
     plans = data["operators"].get(op, {}).get("plans", {})
-    btns = []
-    for gb, info in plans.items():
-        count = get_plan_stock_count(op, gb)
-        btns.append([InlineKeyboardButton(text=f"{gb} - R$ {info['price']:.2f} ({count} disp.)", callback_data=f"buy:{op}:{gb}")])
+    btns = [[InlineKeyboardButton(text=f"{gb} - R$ {info['price']:.2f}", callback_data=f"buy:{op}:{gb}")] for gb, info in plans.items()]
     btns.append([InlineKeyboardButton(text="⬅️ Voltar", callback_data="menu:plans")])
     await callback.message.edit_text(f"📶 *PLANOS {op.upper()}:*", reply_markup=InlineKeyboardMarkup(inline_keyboard=btns), parse_mode="Markdown")
 
@@ -415,8 +391,7 @@ async def cb_buy(callback: CallbackQuery):
     price = data["operators"][op]["plans"][gb]["price"]
     user = get_user(callback.from_user.id)
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Pagar com Saldo", callback_data=f"pay_balance:{op}:{gb}")],[InlineKeyboardButton(text="💎 Gerar PIX", callback_data=f"pay_pix:{op}:{gb}")],[InlineKeyboardButton(text="⬅️ Voltar", callback_data=f"op:{op}")]])
-    text = f"🛒 *RESUMO DA COMPRA*\n\nProduto: {op} {gb}\nValor: *R$ {price:.2f}*\n\nSeu Saldo: *R$ {user['balance']:.2f}*\n\nEscolha a forma de pagamento:"
-    await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    await callback.message.edit_text(f"🛒 *RESUMO:* {op} {gb}\nValor: *R$ {price:.2f}*\nSeu Saldo: *R$ {user['balance']:.2f}*", reply_markup=kb, parse_mode="Markdown")
 
 @dp.callback_query(F.data.startswith("pay_balance:"))
 async def cb_pay_balance(callback: CallbackQuery):
@@ -442,18 +417,17 @@ async def cb_pay_pix(callback: CallbackQuery):
     price = data["operators"][op]["plans"][gb]["price"]
     token = uuid.uuid4().hex
     try:
-        pay_id, pix_code = create_ironpay_payment(price, callback.message.chat.id, token, callback.from_user, f"eSIM {op} {gb}")
+        pay_id, pix_code = create_ironpay_v4_payment(price, callback.message.chat.id, token, callback.from_user, f"eSIM {op} {gb}")
         conn = get_db_connection()
         with conn: conn.execute("INSERT INTO payments (payment_token, payment_id, telegram_id, operator, plan_gb, price, status) VALUES (?, ?, ?, ?, ?, ?, ?)", (token, pay_id, callback.from_user.id, op, gb, price, "pending"))
         conn.close()
-        text = f"💎 *PAGAMENTO PIX*\n\nProduto: *eSIM {op} {gb}*\nValor: *R$ {price:.2f}*\n\nCopia e Cola:\n`{pix_code}`"
-        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Voltar", callback_data=f"buy:{op}:{gb}")]]), parse_mode="Markdown")
+        await callback.message.edit_text(f"💎 *PAGAMENTO PIX*\n`{pix_code}`", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Voltar", callback_data=f"buy:{op}:{gb}")]]), parse_mode="Markdown")
     except: await callback.answer("❌ Erro ao gerar PIX.")
 
 @dp.message(Command("done"))
 async def cmd_done(message: Message):
     if message.from_user.id in admin_state: del admin_state[message.from_user.id]
-    await message.answer("✅ Operação finalizada.", reply_markup=get_admin_kb())
+    await message.answer("✅ Finalizado.", reply_markup=get_admin_kb())
 
 async def poll_payments():
     while True:
@@ -467,17 +441,17 @@ async def poll_payments():
                     uid, op, gb, price = r["telegram_id"], r["operator"], r["plan_gb"], r["price"]
                     if op == "RECARGA":
                         update_balance(uid, price)
-                        await bot.send_message(uid, f"✅ *RECARGA APROVADA!* R$ {price:.2f} creditados.", parse_mode="Markdown")
+                        await bot.send_message(uid, f"✅ *RECARGA APROVADA!* R$ {price:.2f} creditados.")
                     else:
                         photo_path = pick_from_stock(op, gb)
                         if photo_path:
                             conn = get_db_connection()
                             meta = conn.execute("SELECT caption FROM stock_meta WHERE file_path = ?", (str(photo_path),)).fetchone()
                             caption = meta["caption"] if meta else ""
-                            await bot.send_message(uid, f"✅ *PAGAMENTO APROVADO!* {op} {gb}", parse_mode="Markdown")
-                            await bot.send_photo(uid, photo=FSInputFile(str(photo_path)), caption=caption, parse_mode="Markdown")
+                            await bot.send_message(uid, f"✅ *PAGAMENTO APROVADO!* {op} {gb}")
+                            await bot.send_photo(uid, photo=FSInputFile(str(photo_path)), caption=caption)
                             shutil.move(str(photo_path), SOLD_DIR / op / gb / photo_path.name)
-                        else: await bot.send_message(uid, "⚠️ Sem estoque! Suporte: @Mategazx")
+                        else: await bot.send_message(uid, "⚠️ Sem estoque! @Mategazx")
                     conn = get_db_connection()
                     with conn: conn.execute("UPDATE payments SET delivered = 1, status = 'approved' WHERE payment_id = ?", (r["payment_id"],))
                     conn.close()
@@ -492,5 +466,4 @@ async def main():
     asyncio.create_task(poll_payments())
     await dp.start_polling(bot)
 
-if __name__ == "__main__":
-    asyncio.run(main())
+if __name__ == "__main__": asyncio.run(main())
