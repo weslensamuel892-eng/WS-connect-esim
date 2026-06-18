@@ -23,24 +23,22 @@ from aiogram.types import (
 )
 from aiogram.filters import Command, CommandObject
 
-load_dotenv()
-
 # ──────────────────────────────────────────────────────────────────────────────
-# CONFIG & LOGGING
+# CONFIGURAÇÕES DIRETAS (SEM DEPENDÊNCIA DE VARIÁVEIS EXTERNAS)
 # ──────────────────────────────────────────────────────────────────────────────
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-logger = logging.getLogger("ws-connect-esim")
+TELEGRAM_BOT_TOKEN = "8881674626:AAHzC5Qo-HrUJ3dNaJeX4yn3INvNHlBsU6Y"
+IRONPAY_TOKEN = "sz1Rt9JITY5MuWVNnraYwOgQ3CX4vtw76u4gp4M1Y8zCqNu3AVJTJO9onjMd"
+IRONPAY_OFFER_HASH = "eijjfftylw"
+ADMIN_IDS = {7748272760}
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8881674626:AAHzC5Qo-HrUJ3dNaJeX4yn3INvNHlBsU6Y").strip()
-IRONPAY_TOKEN = os.getenv("IRONPAY_TOKEN", "sz1Rt9JITY5MuWVNnraYwOgQ3CX4vtw76u4gp4M1Y8zCqNu3AVJTJO9onjMd").strip()
-IRONPAY_OFFER_HASH = os.getenv("IRONPAY_OFFER_HASH", "eijjfftylw").strip()
 IRONPAY_BASE_URL = "https://api.ironpayapp.com.br/api/public/v1"
 POLL_INTERVAL_SECONDS = 15
 
-ADMIN_IDS = {7748272760}
-env_admins = os.getenv("ADMIN_IDS", "").split(",")
-for x in env_admins:
-    if x.strip().isdigit(): ADMIN_IDS.add(int(x))
+# ──────────────────────────────────────────────────────────────────────────────
+# LOGGING & FILES
+# ──────────────────────────────────────────────────────────────────────────────
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logger = logging.getLogger("ws-connect-esim")
 
 DATA_FILE = Path("data.json")
 STOCK_DIR = Path("stock")
@@ -82,7 +80,7 @@ def save_data(d):
 data = load_data()
 
 # ──────────────────────────────────────────────────────────────────────────────
-# IRONPAY ENGINE (V4 - FIXED FIELDS)
+# IRONPAY ENGINE (V5 - FINAL)
 # ──────────────────────────────────────────────────────────────────────────────
 def generate_cpf():
     cpf = [random.randint(0, 9) for _ in range(9)]
@@ -91,15 +89,14 @@ def generate_cpf():
         cpf.append(11 - val if val > 1 else 0)
     return ''.join(map(str, cpf))
 
-def create_ironpay_v4_payment(price, chat_id, token, user=None, product_name="Recarga de Saldo"):
+def create_ironpay_payment(price, chat_id, token, user=None, product_name="Recarga de Saldo"):
     amount_cents = int(Decimal(str(price)) * 100)
     customer_name = " ".join(filter(None, [getattr(user, 'first_name', ''), getattr(user, 'last_name', '')])) or f"Cliente {chat_id}"
     
-    # Payload rigoroso com todos os campos que a Ironpay exige
     payload = {
         "amount": amount_cents,
-        "offer_hash": IRONPAY_OFFER_HASH,
-        "product_hash": IRONPAY_OFFER_HASH,
+        "offer_hash": str(IRONPAY_OFFER_HASH),
+        "product_hash": str(IRONPAY_OFFER_HASH),
         "title": str(product_name),
         "operation_type": "sell",
         "payment_method": "pix",
@@ -222,7 +219,7 @@ async def cmd_start(message: Message):
 @dp.message(Command("admin"))
 async def cmd_admin(message: Message):
     if message.from_user.id not in ADMIN_IDS: return
-    await message.answer("🛠 *PAINEL ADMINISTRATIVO*\n\nEscolha uma opção para gerenciar o bot:", reply_markup=get_admin_kb(), parse_mode="Markdown")
+    await message.answer("🛠 *PAINEL ADMINISTRATIVO*\n\nEscolha uma opção:", reply_markup=get_admin_kb(), parse_mode="Markdown")
 
 @dp.callback_query(F.data.startswith("admin:"))
 async def cb_admin(callback: CallbackQuery):
@@ -230,17 +227,17 @@ async def cb_admin(callback: CallbackQuery):
     uid = callback.from_user.id
     if action == "add_op":
         admin_state[uid] = {"action": "WAIT_OP_NAME"}
-        await callback.message.edit_text("⌨️ Digite o nome da nova **Operadora** (ex: Vivo, Claro):", parse_mode="Markdown")
+        await callback.message.edit_text("⌨️ Nome da Operadora:", parse_mode="Markdown")
     elif action == "add_plan":
         ops = list(data["operators"].keys())
-        if not ops: return await callback.answer("⚠️ Crie uma operadora primeiro!", show_alert=True)
+        if not ops: return await callback.answer("⚠️ Crie uma operadora!", show_alert=True)
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=op, callback_data=f"admin:sel_op_plan:{op}")] for op in ops])
-        await callback.message.edit_text("📶 Escolha a operadora para o novo plano:", reply_markup=kb)
+        await callback.message.edit_text("📶 Escolha a operadora:", reply_markup=kb)
     elif action == "restock_menu":
         ops = list(data["operators"].keys())
         if not ops: return await callback.answer("⚠️ Sem operadoras!", show_alert=True)
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=op, callback_data=f"admin:sel_op_stock:{op}")] for op in ops])
-        await callback.message.edit_text("📥 Escolha a operadora para repor:", reply_markup=kb)
+        await callback.message.edit_text("📥 Escolha a operadora:", reply_markup=kb)
     elif action == "view_stock":
         text = "📦 *ESTOQUE ATUAL*\n"
         for op, info in data.get("operators", {}).items():
@@ -250,22 +247,22 @@ async def cb_admin(callback: CallbackQuery):
     elif action == "debug_api":
         await callback.answer("🔍 Testando API...", show_alert=False)
         try:
-            pay_id, _ = create_ironpay_v4_payment(10.0, uid, "DEBUG", callback.from_user, "TESTE CONEXAO")
-            await callback.message.edit_text(f"✅ *API CONECTADA!*\n\nID Gerado: `{pay_id}`", reply_markup=get_admin_kb(), parse_mode="Markdown")
+            pay_id, _ = create_ironpay_payment(10.0, uid, "DEBUG", callback.from_user, "TESTE CONEXAO")
+            await callback.message.edit_text(f"✅ *API CONECTADA!*\n\nID: `{pay_id}`", reply_markup=get_admin_kb(), parse_mode="Markdown")
         except Exception as e:
             await callback.message.edit_text(f"❌ *ERRO NA API:*\n\n`{str(e)}`", reply_markup=get_admin_kb(), parse_mode="Markdown")
     elif action == "set_img":
         admin_state[uid] = {"action": "WAIT_START_IMG"}
-        await callback.message.edit_text("🖼 Envie a nova foto para o menu inicial:", parse_mode="Markdown")
+        await callback.message.edit_text("🖼 Envie a foto:")
     elif action == "broadcast":
         admin_state[uid] = {"action": "WAIT_BROADCAST"}
-        await callback.message.edit_text("📢 Digite a mensagem para TODOS:", parse_mode="Markdown")
+        await callback.message.edit_text("📢 Digite a mensagem:")
 
 @dp.callback_query(F.data.startswith("admin:sel_op_plan:"))
 async def cb_admin_sel_op(callback: CallbackQuery):
     op = callback.data.split(":")[3]
     admin_state[callback.from_user.id] = {"action": "WAIT_PLAN_GB", "op": op}
-    await callback.message.edit_text(f"📶 Operadora: *{op}*\n\n⌨️ Digite o tamanho do plano:", parse_mode="Markdown")
+    await callback.message.edit_text(f"📶 Operadora: {op}\n\n⌨️ Digite o tamanho do plano:")
 
 @dp.callback_query(F.data.startswith("admin:sel_op_stock:"))
 async def cb_admin_sel_op_stock(callback: CallbackQuery):
@@ -273,13 +270,13 @@ async def cb_admin_sel_op_stock(callback: CallbackQuery):
     plans = list(data["operators"][op]["plans"].keys())
     if not plans: return await callback.answer("⚠️ Sem planos!", show_alert=True)
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=gb, callback_data=f"admin:sel_plan_stock:{op}:{gb}")] for gb in plans])
-    await callback.message.edit_text(f"📥 Escolha o plano de *{op}* para repor:", reply_markup=kb)
+    await callback.message.edit_text(f"📥 Escolha o plano de {op}:", reply_markup=kb)
 
 @dp.callback_query(F.data.startswith("admin:sel_plan_stock:"))
 async def cb_admin_sel_plan_stock(callback: CallbackQuery):
     _, _, _, op, gb = callback.data.split(":")
     admin_state[callback.from_user.id] = {"action": "WAIT_STOCK_PHOTOS", "op": op, "gb": gb}
-    await callback.message.edit_text(f"📥 *REPOSIÇÃO: {op} {gb}*\n\nEnvie as fotos agora. Use `/done` para sair.", parse_mode="Markdown")
+    await callback.message.edit_text(f"📥 *REPOSIÇÃO: {op} {gb}*\n\nEnvie as fotos. `/done` para sair.")
 
 @dp.message(F.text | F.photo)
 async def handle_admin_input(message: Message):
@@ -295,7 +292,7 @@ async def handle_admin_input(message: Message):
     elif state["action"] == "WAIT_PLAN_GB":
         admin_state[uid]["gb"] = message.text.strip()
         admin_state[uid]["action"] = "WAIT_PLAN_PRICE"
-        await message.answer(f"💰 Digite o Preço para *{state['op']} {message.text}*:")
+        await message.answer(f"💰 Preço para {state['op']} {message.text}:")
     elif state["action"] == "WAIT_PLAN_PRICE":
         try:
             price = float(message.text.replace(",", "."))
@@ -361,7 +358,7 @@ async def cmd_pix(message: Message, command: CommandObject):
         amount = float(command.args.replace(",", "."))
         if amount < 5.0: return await message.answer("⚠️ Valor mínimo: R$ 5,00.")
         token = uuid.uuid4().hex
-        pay_id, pix_code = create_ironpay_v4_payment(amount, message.chat.id, token, message.from_user, "Recarga de Saldo")
+        pay_id, pix_code = create_ironpay_payment(amount, message.chat.id, token, message.from_user, "Recarga de Saldo")
         conn = get_db_connection()
         with conn: conn.execute("INSERT INTO payments (payment_token, payment_id, telegram_id, operator, plan_gb, price, status) VALUES (?, ?, ?, ?, ?, ?, ?)", (token, pay_id, message.from_user.id, "RECARGA", "SALDO", amount, "pending"))
         conn.close()
@@ -417,7 +414,7 @@ async def cb_pay_pix(callback: CallbackQuery):
     price = data["operators"][op]["plans"][gb]["price"]
     token = uuid.uuid4().hex
     try:
-        pay_id, pix_code = create_ironpay_v4_payment(price, callback.message.chat.id, token, callback.from_user, f"eSIM {op} {gb}")
+        pay_id, pix_code = create_ironpay_payment(price, callback.message.chat.id, token, callback.from_user, f"eSIM {op} {gb}")
         conn = get_db_connection()
         with conn: conn.execute("INSERT INTO payments (payment_token, payment_id, telegram_id, operator, plan_gb, price, status) VALUES (?, ?, ?, ?, ?, ?, ?)", (token, pay_id, callback.from_user.id, op, gb, price, "pending"))
         conn.close()
