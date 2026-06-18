@@ -26,7 +26,7 @@ from aiogram.filters import Command, CommandObject
 # ──────────────────────────────────────────────────────────────────────────────
 # CONFIGURAÇÕES DIRETAS (SEM DEPENDÊNCIA DE VARIÁVEIS EXTERNAS)
 # ──────────────────────────────────────────────────────────────────────────────
-TELEGRAM_BOT_TOKEN = "8947643629:AAHplN6gVttZ361oPmN9mbmMosPDyvPQaE8"
+TELEGRAM_BOT_TOKEN = "8947643629:AAGtTKWBbd5hnqMj1eTJLIkI-Or_YuL3shc"
 IRONPAY_TOKEN = "sz1Rt9JITY5MuWVNnraYwOgQ3CX4vtw76u4gp4M1Y8zCqNu3AVJTJO9onjMd"
 IRONPAY_OFFER_HASH = "eijjfftylw"
 ADMIN_IDS = {7748272760}
