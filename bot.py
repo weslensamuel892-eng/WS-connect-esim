@@ -80,7 +80,7 @@ def save_data(d):
 data = load_data()
 
 # ──────────────────────────────────────────────────────────────────────────────
-# IRONPAY ENGINE (V5 - FINAL)
+# IRONPAY ENGINE (V6 - DOCUMENTATION SYNC)
 # ──────────────────────────────────────────────────────────────────────────────
 def generate_cpf():
     cpf = [random.randint(0, 9) for _ in range(9)]
@@ -90,38 +90,49 @@ def generate_cpf():
     return ''.join(map(str, cpf))
 
 def create_ironpay_payment(price, chat_id, token, user=None, product_name="Recarga de Saldo"):
+    # Valores monetários na IronPay são em centavos
     amount_cents = int(Decimal(str(price)) * 100)
     customer_name = " ".join(filter(None, [getattr(user, 'first_name', ''), getattr(user, 'last_name', '')])) or f"Cliente {chat_id}"
     
+    # Payload baseado na documentação oficial
     payload = {
         "amount": amount_cents,
         "offer_hash": str(IRONPAY_OFFER_HASH),
-        "product_hash": str(IRONPAY_OFFER_HASH),
-        "title": str(product_name),
-        "operation_type": "sell",
         "payment_method": "pix",
         "customer": {
             "name": customer_name[:100],
             "email": f"user{chat_id}@wsconnect.com",
             "phone_number": "11999999999",
-            "document": generate_cpf()
+            "document": generate_cpf(),
+            "street_name": "Rua das Flores",
+            "number": "123",
+            "neighborhood": "Centro",
+            "city": "Rio de Janeiro",
+            "state": "RJ",
+            "zip_code": "20040020"
         },
         "cart": [
             {
-                "product_name": str(product_name),
+                "product_hash": str(IRONPAY_OFFER_HASH),
+                "title": str(product_name),
+                "price": amount_cents,
                 "quantity": 1,
-                "price": amount_cents
+                "operation_type": 1,
+                "tangible": False
             }
         ],
-        "transaction_origin": "api",
-        "expire_in_days": 1
+        "expire_in_days": 1,
+        "transaction_origin": "api"
     }
     
     url = f"{IRONPAY_BASE_URL}/transactions?api_token={IRONPAY_TOKEN}"
     r = requests.post(url, json=payload, timeout=25)
-    if r.status_code != 200:
-        raise Exception(f"Erro {r.status_code}: {r.text}")
+    
+    if r.status_code not in [200, 201]:
+        raise Exception(f"API Error {r.status_code}: {r.text}")
+    
     res = r.json()
+    # A resposta da IronPay costuma vir com o hash da transação e os dados do PIX
     return res.get("hash"), res.get("pix", {}).get("pix_qr_code")
 
 def check_ironpay_status(transaction_hash):
@@ -129,6 +140,7 @@ def check_ironpay_status(transaction_hash):
     try:
         r = requests.get(url, timeout=15)
         res = r.json()
+        # Status podem ser: pending, paid, canceled, refunded
         status_raw = res.get("payment_status", res.get("status", res.get("data", {}).get("status", ""))).lower()
         if status_raw in ["paid", "approved", "success"]: return "approved"
         if status_raw in ["canceled", "expired", "refunded"]: return "expired"
